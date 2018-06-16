@@ -1,0 +1,84 @@
+---
+title: "Part3_MachineLearning"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+library(dplyr)
+library(caret)
+library(RTextTools)
+library(xgboost)
+library(ROCR)
+```
+
+```{r}
+setwd("/home/usuario/Mis-datos")
+data <- read.csv("Arguelles.csv", stringsAsFactors = FALSE)
+head(data)
+```
+
+```{r}
+
+```
+
+```{r}
+set.seed(1234)
+# Creating the outcome value
+data$good.read <- 0
+data$good.read[data$comment_puntuation == 'ui_bubble_rating bubble_40' | data$comment_puntuation == 'ui_bubble_rating bubble_45'
+               | data$comment_puntuation == 'ui_bubble_rating bubble_50' | data$comment_puntuation == 'ui_bubble_rating bubble_4'
+               | data$comment_puntuation == 'ui_bubble_rating bubble_5'] <- 1
+head(data)
+```
+
+```{r}
+trainIdx <- createDataPartition(data$good.read, 
+                                p = .75, 
+                                list = FALSE, 
+                                times = 1)
+train <- data[trainIdx, ]
+test <- data[-trainIdx, ]
+```
+
+```{r}
+# Creating a DTM for the negative reviews
+sparsity <- .99
+bad.dtm <- create_matrix(train$comment[train$good.read == 0], 
+                         language = "spanish", 
+                         removeStopwords = FALSE, 
+                         removeNumbers = TRUE, 
+                         stemWords = FALSE, 
+                         removeSparseTerms = sparsity) 
+#Converting the DTM in a data frame
+bad.dtm.df <- as.data.frame(as.matrix(bad.dtm), 
+                            row.names = train$comment.id[train$good.read == 0])
+
+```
+
+```{r}
+# Creating a DTM for the positive reviews
+good.dtm <- create_matrix(train$comment[train$good.read == 1], 
+                          language = "spanish",
+                          removeStopwords = FALSE, 
+                          removeNumbers = TRUE, 
+                          stemWords = FALSE, 
+                          removeSparseTerms = sparsity) 
+
+good.dtm.df <- data.table(as.matrix(good.dtm), 
+                          row.names = train$comment.id[train$good.read == 1])
+```
+
+```{r}
+# Joining the two DTM together
+train.dtm.df <- bind_rows(bad.dtm.df, good.dtm.df)
+train.dtm.df$comment.id <- c(train$comment.id[train$good.read == 0],
+                            train$comment.id[train$good.read == 1])
+train.dtm.df <- arrange(train.dtm.df, comment.id)
+train.dtm.df$good.read <- train$good.read
+```
+
