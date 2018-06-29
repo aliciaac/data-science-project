@@ -3,26 +3,351 @@ title: "Part2_SentimentAnalysis"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tm)
+library(magrittr)
+library(textcat)
+library(tidytext)
+library(RTextTools)
+library(RYandexTranslate)
 ```
 
-## R Markdown
+Dataset completo con todos los resultados obtenidos del scrapeo por zonas de Madrid: Argüelles, Centro, Chamberí, Chueca, Huertas, Latina, Lavapiés, Plaza Mayor, Prado, Salamanca, Sol.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r}
+setwd('/home/usuario/Mis-datos') #Sustituir por el directorio donde se encuentren los datos
+filenames <- list.files(full.names=TRUE)
+All <- lapply(filenames,function(i){read.csv(i, header=FALSE, skip=4)})
+data <- do.call(rbind.data.frame, All)
+head(data)
+```  
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Agregar nombre a columnas
 
-```{r cars}
-summary(cars)
+```{r}
+colnames(data) <- c("comentario", "puntuacion", "titulo.comentario", "zona", "descripción", "restaurante", "puntuacion.restaurante")
+head(data)
 ```
 
-## Including Plots
+Unificar columnas y eliminar las que no son necesarias para el posterior análisis
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+data$comentario <- str_replace(data$comentario, "Mostrar menos", "")
+head(data)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+data <- mutate(data, comentario.completo = paste(data$titulo.comentario, "." ,data$comentario)) 
+head(data)
+```
+
+
+```{r}
+data <- select(data, restaurante, puntuacion, comentario.completo)
+head(data)
+```
+
+Nos quedamos con las filas que tienen puntuación y con las que tienen comentarios de una longitud mayor que 5.
+
+```{r}
+data <- data.table(data)
+```
+
+
+```{r}
+data$puntuacion <- as.character(data$puntuacion)
+```
+
+
+```{r}
+data <- data[puntuacion %in% c('ui_bubble_rating bubble_50', 
+                                       'ui_bubble_rating bubble_40',
+                                       'ui_bubble_rating bubble_30',
+                                       'ui_bubble_rating bubble_20',
+                                       'ui_bubble_rating bubble_10')]
+data <- data[length(data$comentario.completo) >= 5]
+```
+
+
+```{r}
+data$puntuacion[data$puntuacion == 'ui_bubble_rating bubble_10'] <- 1
+data$puntuacion[data$puntuacion == 'ui_bubble_rating bubble_20'] <- 2
+data$puntuacion[data$puntuacion == 'ui_bubble_rating bubble_30'] <- 3
+data$puntuacion[data$puntuacion == 'ui_bubble_rating bubble_40'] <- 4
+data$puntuacion[data$puntuacion == 'ui_bubble_rating bubble_50'] <- 5
+data$puntuacion <- as.integer(data$puntuacion)
+
+```
+
+
+```{r}
+barplot(table(as.factor(data$puntuacion)),
+        ylim = c(0,2000), 
+        main = "Distribución de puntuaciones")
+```
+
+
+```{r}
+data$longitud.comentario = nchar(data$comentario.completo)
+hist(data$longitud.comentario, 
+     ylim = c(0,1500), 
+     main = "Distribución de longitud de comentarios" )
+```
+
+En cuanto a la longitud de los comentarios, podemos comprobar que hay 13 con una longitud superior a 2000, que procederemos a eliminar para evitar que pueda alterase el peso de una palabra muy repetida dentro de un mismo comentario.
+
+```{r}
+n <- nrow(data[data$longitud.comentario >= 2000])
+data <- data[data$longitud.comentario <= 2000]
+hist(data$longitud.comentario, 
+     ylim = c(0,1500), 
+     main = "Distribución de longitud de comentarios" )
+```
+
+
+```{r}
+with(data, boxplot(longitud.comentario~puntuacion, 
+                   main = "Distribución de la longitud de los comentarios por puntuación"))
+```
+
+
+```{r}
+data$review.id <- 1:nrow(data)
+```
+
+Traducción de comentarios
+
+```{r}
+api_key="trnsl.1.1.20180621T171618Z.cabc0e463fa891cb.e0f7bcfefcae260b953dfc06f64a447345c7d5f2"
+directions=get_translation_direction(api_key)
+head(directions)
+```
+
+ 
+```{r}
+trans = function (api_key, text = "", lang = "") 
+{
+  url = "https://translate.yandex.net/api/v1.5/tr.json/translate?"
+  url = paste(url, "key=", api_key, sep = "")
+  if (text != "") {
+    url = paste(url, "&text=", text, sep = "")
+  }
+  if (lang != "") {
+    url = paste(url, "&lang=", lang, sep = "")
+  }
+  url = gsub(pattern = " ", replacement = "%20", x = url)
+  d = RCurl::getURL(url, ssl.verifyhost = 0L, ssl.verifypeer = 0L)
+  d = jsonlite::fromJSON(d)
+  d$code = NULL
+  d
+}
+```
+
+
+```{r}
+comentario.en <- apply(as.matrix(data[,3]), 1, function(x){trans(api_key,x,lang="es-en")})
+```
+
+
+```{r}
+comentario.estr <- as.data.table(melt(comentario.en))
+```
+
+
+```{r}
+comentario.estr2 <- comentario.estr[comentario.estr$L2 == "text"]
+```
+
+
+```{r}
+data.translate <- data.table(as.matrix(comentario.estr2))
+colnames(data.translate) <- c("comentario.en", "text", "review.id")
+data.translate$review.id <- as.integer(data.translate$review.id)
+```
+
+
+```{r}
+data.translate <- data %>%
+  inner_join(data.translate, by = "review.id") %>%
+  select(-c(text, comentario.completo, longitud.comentario))
+```
+
+Comprobamos que todo el texto esté en inglés
+
+```{r}
+data.translate$language <- as.factor(textcat(data.translate$comentario.en))
+data.translate <- data.translate[language == "english"]
+head(data.translate)
+```
+
+Volvemos a eliminar aquellos comentarios que tengan una longitud menor que 5, debido posibles errores en la traducción
+
+```{r}
+data.translate <- data.translate[length(data.translate$comentario.en) >= 5]
+```
+
+
+```{r}
+data.translate$longitud.comentario = nchar(data.translate$comentario.en)
+hist(data.translate$longitud.comentario, 
+     ylim = c(0,1500), 
+     main = "Distribución de longitud de comentarios" )
+```
+
+
+```{r}
+with(data.translate, boxplot(longitud.comentario~puntuacion, 
+                   main = "Distribución de la longitud de los comentarios por puntuación"))
+```
+
+A continuación vamos a utilizar los aspectos positivos o neativos de las palabras para ver si estan correlacionados con la punutacion de los comentarios
+
+```{r}
+# Loading the first sentiment score lexicon
+AFINN <- sentiments %>%
+  filter(lexicon == "AFINN") %>%
+  select(word, afinn_score = score)
+head(AFINN)
+```
+
+
+```{r}
+# Loading the second sentiment score lexicon
+Bing <- sentiments %>%
+  filter(lexicon == "bing") %>%
+  select(word, bing_sentiment = sentiment)
+head(Bing)
+```
+
+
+```{r}
+palabras.comentarios <- data.translate %>%
+  unnest_tokens(word, comentario.en) %>%
+  select(-c(restaurante, longitud.comentario, language)) %>%
+  left_join(AFINN, by = "word") %>%
+  left_join(Bing, by = "word") 
+```
+
+Calculamos la media de sentimiento
+
+```{r}
+media.sentimiento.comentario <- palabras.comentarios %>%
+  group_by(review.id, puntuacion) %>%
+  summarize(media.sentimiento = mean(afinn_score, na.rm = TRUE))
+```
+
+
+```{r}
+theme_set(theme_bw())
+ggplot(media.sentimiento.comentario, aes(puntuacion, media.sentimiento, group = puntuacion)) +
+  geom_boxplot() +
+  ylab("Media sentimiento por puntuación")
+```
+
+
+```{r}
+media.sentimiento.comentario <- media.sentimiento.comentario %>%
+  select(-puntuacion) %>% # Eliminamos las puntuaciones para evitar duplicarlas
+  data.table()
+clean.data <- data.translate %>%
+  left_join(media.sentimiento.comentario, by = "review.id")
+```
+
+Mediana 
+
+```{r}
+mediana.sentimiento.comentario <- palabras.comentarios %>%
+  group_by(review.id, puntuacion) %>%
+  summarize(mediana.sentimiento = median(afinn_score, na.rm = TRUE))
+theme_set(theme_bw())
+ggplot(mediana.sentimiento.comentario, aes(puntuacion, mediana.sentimiento, group = puntuacion)) +
+  geom_boxplot() +
+  ylab("Mediana sentimiento por puntuación")
+```
+
+```{r}
+mediana.sentimiento.comentario <- mediana.sentimiento.comentario %>%
+  select(-puntuacion) %>%
+  data.table()
+clean.data <- clean.data %>%
+  left_join(mediana.sentimiento.comentario, by = "review.id")
+```
+
+Contar el número de palabras negativas por comentario según AFINN lexicon
+
+```{r}
+comment_count_afinn_negative <- palabras.comentarios %>%
+  filter(afinn_score < 0) %>%
+  group_by(review.id, puntuacion) %>%
+  summarize(count_afinn_negative = n())
+# Transferir resultados a nuestro dataset
+comment_count_afinn_negative <- comment_count_afinn_negative %>%
+  select(-puntuacion) %>%
+  data.table()
+clean.data <- clean.data %>%
+  left_join(comment_count_afinn_negative, by = "review.id")
+```
+
+Contar el número de palabras positivas por comentario según AFFIN lexicon
+
+```{r}
+comment_count_afinn_positive <- palabras.comentarios%>%
+  filter(afinn_score > 0) %>%
+  group_by(review.id, puntuacion) %>%
+  summarize(count_afinn_positive = n())
+# Transferir resultados a nuestro dataset
+comment_count_afinn_positive <- comment_count_afinn_positive %>%
+  select(-puntuacion) %>%
+  data.table()
+clean.data <- clean.data %>%
+  left_join(comment_count_afinn_positive, by = "review.id")
+```
+
+Contar en número de palabras negativas por comentario según Bing lexicon
+
+```{r}
+comment_count_bing_negative <- palabras.comentarios %>%
+  filter(bing_sentiment == "negative") %>%
+  group_by(review.id, puntuacion) %>%
+  summarize(count_bing_negative = n())
+# Transferir resultados a nuestro dataset
+comment_count_bing_negative <- comment_count_bing_negative %>%
+  select(-puntuacion) %>%
+  data.table()
+clean.data <- clean.data %>%
+  left_join(comment_count_bing_negative, by = "review.id")
+```
+
+Contar el númeo de palabras positivas por comentario según Bing lexicon
+
+```{r}
+comment_count_bing_positive <- palabras.comentarios %>%
+  filter(bing_sentiment == "positive") %>%
+  group_by(review.id, puntuacion) %>%
+  summarize(count_bing_positive = n())
+# Transferir resultados a nuestro dataset
+comment_count_bing_positive <- comment_count_bing_positive %>%
+  select(-puntuacion) %>%
+  data.table()
+clean.data <- clean.data %>%
+  left_join(comment_count_bing_positive, by = "review.id")
+```
+
+
+```{r}
+clean.data <- clean.data %>%
+  select(-language)
+head(clean.data)
+```
+
+Cargamos los resultados a un csv
+
+```{r}
+write.csv(clean.data, "CleanData.csv", row.names = FALSE)
+```
+
