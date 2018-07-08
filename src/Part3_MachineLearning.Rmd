@@ -1,0 +1,194 @@
+---
+title: "Part3_MachineLearning"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(caret)
+library(RTextTools)
+library(xgboost)
+library(ROCR)
+library(lime)
+```
+
+```{r}
+setwd("/home/usuario/Mis-datos") #Sustituir por el directorio donde se encuentren los datos
+data <- read.csv("CleanData.csv", stringsAsFactors = FALSE)
+head(data)
+```
+
+Vamos a crear una variabe vinaria para experesar las puntuaciones. Calificaremos como Buenos aquellos con 4 y 5 estrellas.
+
+```{r}
+set.seed(1234)
+data$good.label <- 0
+data$good.label[data$puntuacion == '4' | data$puntuacion == '5'] <- 1
+head(data)
+```
+
+Particionamos los datos para train y test.
+
+```{r}
+trainIdx <- createDataPartition(data$good.label, p = .85, list = FALSE, times = 1)
+train <- data[trainIdx, ]
+test <- data[-trainIdx, ]
+```
+
+Como nuestro objetivo es ver la frecuencia de cada palabra, necesitaremos contar la aparición de cada una de ellas por comentario. Para ello crearemos una matriz donde los comenarios ocuparán las filas y las pablabas las columnas, y cada entrada de la matriz indicará en número de apariciones de cada palabara en cada comentario.
+Además para evitar tener en cuenta todas las palabras, solo nos quedaremos con aquellas palabras que aparezcan al menos un 1% (sparsity=1-0.1=0.99).
+Para conseguir quedarnos con las palabras que aparecen en los comentarios negativos, que son minoría, crearemos las matrices por separado y después las uniremos.
+
+```{r}
+sparsity <- .99
+bad.dtm <- create_matrix(train$comentario.en[train$good.label == 0], 
+                         language = "english", 
+                         removeStopwords = FALSE, 
+                         removeNumbers = TRUE, 
+                         stemWords = FALSE, 
+                         removeSparseTerms = sparsity) 
+
+bad.dtm.df <- as.data.frame(as.matrix(bad.dtm), 
+                            row.names = train$review.id[train$good.label == 0])
+
+```
+
+
+```{r}
+good.dtm <- create_matrix(train$comentario.en[train$good.label == 1], 
+                          language = "english",
+                          removeStopwords = FALSE, 
+                          removeNumbers = TRUE, 
+                          stemWords = FALSE, 
+                          removeSparseTerms = sparsity) 
+
+good.dtm.df <- as.data.frame(as.matrix(good.dtm), 
+                          row.names = train$review.id[train$good.label == 1])
+```
+
+Unimos las dos matrices
+
+```{r}
+train.dtm.df <- bind_rows(bad.dtm.df, good.dtm.df)
+train.dtm.df$review.id <- c(train$review.id[train$good.label == 0],
+                            train$review.id[train$good.label == 1])
+train.dtm.df <- arrange(train.dtm.df, review.id)
+train.dtm.df$good.label <- train$good.label
+```
+
+
+```{r}
+train.dtm.df <- train %>%
+  select(-c(restaurante, comentario.en, puntuacion, good.label)) %>%
+  inner_join(train.dtm.df, by = "review.id") %>%
+  select(-review.id)
+  
+train.dtm.df[is.na(train.dtm.df)] <- 0
+
+```
+
+
+```{r}
+test.dtm <- create_matrix(test$comentario.en, 
+                          language = "english", 
+                          removeStopwords = FALSE, 
+                          removeNumbers = TRUE, 
+                          stemWords = FALSE, 
+                          removeSparseTerms = sparsity) 
+test.dtm.df <- data.table(as.matrix(test.dtm))
+test.dtm.df$review.id <- test$review.id
+test.dtm.df$good.label <- test$good.label
+```
+
+
+```{r}
+test.dtm.df <- test %>%
+  select(-c(restaurante, comentario.en, puntuacion, good.label)) %>%
+  inner_join(test.dtm.df, by = "review.id") %>%
+  select(-review.id)
+```
+
+Ahora debemos asegurarnos de que nuestro test DTM tiene las mismas columnas que el de test:
+
+```{r}
+test.dtm.df <- head(bind_rows(test.dtm.df, train.dtm.df[1, ]), -1)
+test.dtm.df <- test.dtm.df %>% 
+  select(one_of(colnames(train.dtm.df)))
+test.dtm.df[is.na(test.dtm.df)] <- 0
+
+```
+
+Machine learning: Utilizaremos XGboost
+
+```{r}
+baseline.acc <- sum(test$good.label == "1") / nrow(test)
+
+XGB.train <- as.matrix(select(train.dtm.df, -good.label),
+                       dimnames = dimnames(train.dtm.df))
+XGB.test <- as.matrix(select(test.dtm.df, -good.label),
+                      dimnames=dimnames(test.dtm.df))
+XGB.model <- xgboost(data = XGB.train, 
+                     label = train.dtm.df$good.label,
+                     nrounds = 70, 
+                     objective = "binary:logistic")
+
+XGB.predict <- predict(XGB.model, XGB.test)
+ 
+XGB.results <- data.frame(good.label = test$good.label,
+                          pred.label = XGB.predict)
+```
+
+Curva ROC
+
+```{r}
+ROCR.pred <- prediction(XGB.results$pred.label, XGB.results$good.label)
+ROCR.perf <- performance(ROCR.pred, 'tnr','fnr') 
+plot(ROCR.perf, colorize = TRUE)
+```
+
+Analisis de características
+
+```{r}
+names <- colnames(test.dtm.df)
+importance.matrix <- xgb.importance(names, model = XGB.model)
+xgb.plot.importance(importance.matrix[1:20, ])
+```
+
+Vamos a tratar de entender cuales son las características más importantes para realizar las predicciones
+
+```{r}
+test_labels_cor <- test.dtm.df$good.label == 1
+test_labels_cor <- test.dtm.df[test_labels_cor,]
+test_labels_cor_2 <- as.matrix(select(test_labels_cor, -good.label))
+
+test_labels_wrong <- test.dtm.df$good.label == 0
+test_labels_wrong <- test.dtm.df[test_labels_wrong,]
+test_labels_wrong_2 <- as.matrix(select(test_labels_wrong, -good.label))
+```
+
+Para los comentarios negativos
+
+```{r}
+x_lime_n <- as.data.frame(XGB.train)
+explainer_n <- lime(x_lime_n, model = XGB.model)
+
+x_explain_n <- as.data.table(test_labels_wrong_2[1:2,])
+explanation_n <- explain(x_explain_n, explainer_n, n_labels = 1, n_features = 20)
+explanation_n[, 2:9]
+plot_features(explanation_n)
+```
+
+Para los comentarios positivos
+
+```{r}
+x_lime_p <- as.data.frame(XGB.train)
+explainer_p <- lime(x_lime_p, model = XGB.model)
+
+x_explain_p <- as.data.table(test_labels_cor_2[1:2,])
+explanation_p <- explain(x_explain_p, explainer_p, n_labels = 1, n_features = 20)
+explanation_p[, 2:9]
+plot_features(explanation_p)
+```
+
+
