@@ -180,6 +180,7 @@ data.translate <- data %>%
 Comprobamos que todo el texto esté en inglés
 
 ```{r}
+data.translate <- data.table(data.translate)
 data.translate$language <- as.factor(textcat(data.translate$comentario.en))
 data.translate <- data.translate[language == "english"]
 head(data.translate)

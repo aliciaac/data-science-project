@@ -147,6 +147,16 @@ ROCR.perf <- performance(ROCR.pred, 'tnr','fnr')
 plot(ROCR.perf, colorize = TRUE)
 ```
 
+Table y accuracy
+
+```{r}
+XGB.table <- table(true = XGB.results$good.label, 
+                   pred = as.integer(XGB.results$pred.label >= 0.80))
+XGB.table
+XGB.acc <- sum(diag(XGB.table)) / nrow(test)
+```
+
+
 Analisis de características
 
 ```{r}
@@ -173,7 +183,7 @@ Para los comentarios negativos
 x_lime_n <- as.data.frame(XGB.train)
 explainer_n <- lime(x_lime_n, model = XGB.model)
 
-x_explain_n <- as.data.table(test_labels_wrong_2[1:2,])
+x_explain_n <- as.data.table(test_labels_wrong_2[2:3,])
 explanation_n <- explain(x_explain_n, explainer_n, n_labels = 1, n_features = 20)
 explanation_n[, 2:9]
 plot_features(explanation_n)
